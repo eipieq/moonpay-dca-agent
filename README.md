@@ -53,11 +53,14 @@ to actually execute swaps, fund the MoonPay `AgentWallet` Solana address with US
 | audit log | Status Network Sepolia — gasless, `gasPrice: 0n` |
 | smart contract | `DecisionLog.sol` — stores keccak256 hashes + timestamps onchain |
 
-## why it qualifies
+## tracks
 
-**MoonPay CLI Agents:** MoonPay CLI is the primary execution layer. every balance check, market data fetch, and swap goes through `mp`.
-
-**OpenWallet Standard:** OWS manages the non-custodial wallet. keys are encrypted at rest in the OWS vault, signing happens in an isolated subprocess — the LLM never sees a private key.
+| track | how we qualify |
+|---|---|
+| MoonPay CLI Agents | `mp` is the primary action layer — market data, balances, swap execution all go through it |
+| OpenWallet Standard | `ows` manages all keys — encrypted at rest, agent never touches the private key directly |
+| Synthesis Open Track | onchain audit primitive for any autonomous agent system |
+| Student Founder's Bet | current MSE + IIT Madras BS Data Science student |
 
 **what makes it different:** every other agent logs to a backend or logs nothing. this one commits each reasoning step to a public blockchain with cryptographic proof. you can audit any session after the fact from chain alone. that's new.
 
