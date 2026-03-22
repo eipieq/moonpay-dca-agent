@@ -3,6 +3,7 @@ require("dotenv").config();
 const { spawnSync } = require("child_process");
 const { ethers } = require("ethers");
 const OpenAI = require("openai");
+const fs = require("fs");
 
 const wallet = "AgentWallet";
 const chain = "solana";
@@ -147,19 +148,83 @@ async function run() {
   console.log("\ncommitting to chain...");
   const s3 = await commit("execution", execution);
 
+  // save session for verify
+  const session = {
+    ts: new Date().toISOString(),
+    steps: {
+      market_data: { txHash: s1.txHash, outputHash: s1.outputHash, content: s1.content },
+      decision:    { txHash: s2.txHash, outputHash: s2.outputHash, content: s2.content },
+      execution:   { txHash: s3.txHash, outputHash: s3.outputHash, content: s3.content },
+    }
+  };
+  fs.writeFileSync("last-session.json", JSON.stringify(session, null, 2));
+
   // summary
   console.log("\n── proof of agent ──────────────────────────");
   console.log("every step is now permanently onchain.");
-  console.log("run `node agent.js replay` to reconstruct this session from chain alone.\n");
+  console.log("session saved to last-session.json\n");
   console.log("market_data tx: ", s1.txHash);
   console.log("decision tx:    ", s2.txHash);
   console.log("execution tx:   ", s3.txHash);
+  console.log("\nto verify:");
+  console.log(`  node agent.js verify decision ${s2.txHash}`);
   console.log("────────────────────────────────────────────");
+}
+
+// ── verify: prove content matches an onchain hash ────────────────────────────
+async function verify() {
+  const step = process.argv[3] || "decision";
+  const txHash = process.argv[4];
+
+  if (!fs.existsSync("last-session.json")) {
+    console.log("no session found. run the agent first.");
+    return;
+  }
+
+  const session = JSON.parse(fs.readFileSync("last-session.json"));
+  const entry = session.steps[step];
+  if (!entry) {
+    console.log(`unknown step "${step}". use: market_data, decision, or execution`);
+    return;
+  }
+
+  const content = entry.content;
+  const hash = txHash || entry.txHash;
+  console.log(`verifying step: ${step}`);
+  console.log(`tx: ${hash}\n`);
+
+  const computed = ethers.keccak256(ethers.toUtf8Bytes(content));
+  console.log("computed hash:", computed);
+
+  const provider = new ethers.JsonRpcProvider(rpc);
+  const receipt = await provider.getTransactionReceipt(hash);
+  if (!receipt) {
+    console.log("tx not found on chain:", hash);
+    return;
+  }
+
+  const contract = new ethers.Contract(logAddress, logAbi, provider);
+  const logs = await contract.getLogs();
+  const match = logs.find(e => e.outputHash === computed);
+
+  if (match) {
+    console.log("✓ verified — this content was committed onchain");
+    console.log("  step:      ", match.prompt.replace("proof-of-agent:", ""));
+    console.log("  agent:     ", match.agent);
+    console.log("  timestamp: ", new Date(Number(match.timestamp) * 1000).toISOString());
+    console.log("  hash:      ", computed);
+  } else {
+    console.log("✗ not verified — hash not found onchain");
+    console.log("  content was tampered with, or this tx is not a proof-of-agent log");
+    console.log("\n  to demo tampering, edit last-session.json and change one word, then re-run verify");
+  }
 }
 
 const mode = process.argv[2];
 if (mode === "replay") {
   replay().catch((e) => { console.error(e.message); process.exit(1); });
+} else if (mode === "verify") {
+  verify().catch((e) => { console.error(e.message); process.exit(1); });
 } else {
   run().catch((e) => { console.error(e.message); process.exit(1); });
 }
