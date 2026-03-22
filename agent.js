@@ -30,6 +30,18 @@ function ows(args) {
   return r.stdout.trim();
 }
 
+function owsSign(message) {
+  const r = spawnSync("ows", [
+    "sign", "message",
+    "--chain", "ethereum",
+    "--wallet", wallet,
+    "--message", message,
+    "--json"
+  ], { encoding: "utf8" });
+  if (r.status !== 0) throw new Error(r.stderr.trim());
+  return JSON.parse(r.stdout.trim());
+}
+
 function getContract() {
   const provider = new ethers.JsonRpcProvider(rpc);
   const signer = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
@@ -39,10 +51,20 @@ function getContract() {
 async function commit(step, content) {
   const contract = getContract();
   const hash = ethers.keccak256(ethers.toUtf8Bytes(content));
+
+  let signature = null;
+  try {
+    const signed = owsSign(hash);
+    signature = signed.signature || signed;
+    console.log(`  [${step}] ows signed → ${typeof signature === "string" ? signature.slice(0, 20) + "..." : "ok"}`);
+  } catch (e) {
+    console.log(`  [${step}] ows sign skipped: ${e.message.split("\n")[0]}`);
+  }
+
   const tx = await contract.log(hash, `proof-of-agent:${step}`, { gasPrice: 0n, gasLimit: 3000000n });
   const receipt = await tx.wait();
   console.log(`  [${step}] committed → ${receipt.hash}`);
-  return { txHash: receipt.hash, outputHash: hash, content };
+  return { txHash: receipt.hash, outputHash: hash, content, signature };
 }
 
 // ── replay: reconstruct full session from chain alone ─────────────────────────
@@ -152,9 +174,9 @@ async function run() {
   const session = {
     ts: new Date().toISOString(),
     steps: {
-      market_data: { txHash: s1.txHash, outputHash: s1.outputHash, content: s1.content },
-      decision:    { txHash: s2.txHash, outputHash: s2.outputHash, content: s2.content },
-      execution:   { txHash: s3.txHash, outputHash: s3.outputHash, content: s3.content },
+      market_data: { txHash: s1.txHash, outputHash: s1.outputHash, content: s1.content, signature: s1.signature },
+      decision:    { txHash: s2.txHash, outputHash: s2.outputHash, content: s2.content, signature: s2.signature },
+      execution:   { txHash: s3.txHash, outputHash: s3.outputHash, content: s3.content, signature: s3.signature },
     }
   };
   fs.writeFileSync("last-session.json", JSON.stringify(session, null, 2));

@@ -1,5 +1,7 @@
 # proof of agent
 
+![proof of agent](proof-of-agent.jpg)
+
 AI agents act. nobody can prove what they decided, why, or what actually ran.
 
 this project fixes that. every step an agent takes — what market data it saw, what it decided, what it executed — gets committed onchain as a keccak256 hash, permanently, for free. the tx hash is the receipt. the chain is the audit log.

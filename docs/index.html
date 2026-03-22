@@ -144,6 +144,52 @@
       font-size: 12px;
     }
 
+    .verify-section {
+      margin-top: 40px;
+      border: 1px solid #1a1a1a;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .verify-header {
+      background: #111;
+      padding: 12px 16px;
+      border-bottom: 1px solid #1a1a1a;
+      font-size: 12px;
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .verify-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+
+    .verify-body p { color: #555; font-size: 11px; }
+
+    textarea {
+      width: 100%;
+      background: #0d0d0d;
+      border: 1px solid #222;
+      border-radius: 4px;
+      color: #888;
+      font-family: inherit;
+      font-size: 11px;
+      padding: 10px;
+      resize: vertical;
+      min-height: 80px;
+      outline: none;
+    }
+
+    textarea:focus { border-color: #333; }
+
+    .verify-result {
+      font-size: 12px;
+      padding: 10px 12px;
+      border-radius: 4px;
+      display: none;
+    }
+
+    .verify-result.ok  { background: #0a1a0a; border: 1px solid #1a3a1a; color: #4ade80; }
+    .verify-result.bad { background: #1a0a0a; border: 1px solid #2a1010; color: #f87171; }
+
     footer {
       margin-top: 48px;
       padding-top: 24px;
@@ -198,6 +244,16 @@
 
     <div id="output"></div>
 
+    <div class="verify-section">
+      <div class="verify-header">verify a decision</div>
+      <div class="verify-body">
+        <p>paste the exact content of any step below. we'll hash it client-side and check if it exists onchain.</p>
+        <textarea id="verify-input" placeholder="paste decision content here..."></textarea>
+        <button onclick="verifyContent()">verify</button>
+        <div class="verify-result" id="verify-result"></div>
+      </div>
+    </div>
+
     <footer>
       <span>built with MoonPay CLI + OpenWallet Standard + Status Network</span>
       <span>
@@ -209,6 +265,8 @@
   </div>
 
   <script>
+    let cachedLogs = null;
+
     const RPC = "https://public.sepolia.rpc.status.network";
     const ADDRESS = "0xF1DD974deD8ECF432AF9A0abb10584dE92d2Fc1e";
     const ABI = [
@@ -234,6 +292,7 @@
         const contract = new ethers.Contract(ADDRESS, ABI, provider);
         const raw = await contract.getLogs();
 
+        cachedLogs = raw;
         const entries = raw.filter(e => e.prompt.startsWith("proof-of-agent:"));
 
         setStatus(`${raw.length} total entries · ${entries.length} proof-of-agent steps`, "green");
@@ -282,6 +341,48 @@
       } catch (e) {
         setStatus("connection failed", "");
         document.getElementById("output").innerHTML = `<div class="error">error: ${e.message}</div>`;
+      }
+    }
+
+    async function verifyContent() {
+      const content = document.getElementById("verify-input").value.trim();
+      const resultEl = document.getElementById("verify-result");
+
+      if (!content) {
+        resultEl.className = "verify-result bad";
+        resultEl.style.display = "block";
+        resultEl.textContent = "paste some content first";
+        return;
+      }
+
+      resultEl.className = "verify-result";
+      resultEl.style.display = "block";
+      resultEl.textContent = "checking...";
+
+      try {
+        let logs = cachedLogs;
+        if (!logs) {
+          const provider = new ethers.JsonRpcProvider(RPC);
+          const contract = new ethers.Contract(ADDRESS, ABI, provider);
+          logs = await contract.getLogs();
+          cachedLogs = logs;
+        }
+
+        const hash = ethers.keccak256(ethers.toUtf8Bytes(content));
+        const match = logs.find(e => e.outputHash === hash);
+
+        if (match) {
+          const step = match.prompt.replace("proof-of-agent:", "");
+          const time = new Date(Number(match.timestamp) * 1000).toLocaleString();
+          resultEl.className = "verify-result ok";
+          resultEl.textContent = `✓ verified onchain  ·  step: ${step}  ·  agent: ${shortHash(match.agent)}  ·  ${time}`;
+        } else {
+          resultEl.className = "verify-result bad";
+          resultEl.textContent = "✗ not found — content does not match any onchain hash";
+        }
+      } catch (e) {
+        resultEl.className = "verify-result bad";
+        resultEl.textContent = "error: " + e.message;
       }
     }
 
