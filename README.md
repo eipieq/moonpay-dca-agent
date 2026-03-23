@@ -12,18 +12,19 @@ the DCA execution is the demo. the onchain audit layer is the actual thing.
 
 ## how it works
 
-four steps, four onchain commits per run:
+five steps, five onchain commits per run:
 
-1. **market data** — fetches SOL + ETH prices, trending tokens, and portfolio balance via MoonPay CLI. OWS signs the hash on ethereum and solana. committed onchain.
+0. **policy config** — before the agent acts, it declares its constraints. the policy config is serialized, OWS-signed on ethereum and solana, and committed onchain. this is the trust anchor — proof of what rules the agent agreed to operate under.
+1. **market data** — fetches SOL + ETH prices, trending tokens, and portfolio balance via MoonPay CLI. OWS signs the hash. committed onchain.
 2. **decision** — reasons via OpenAI GPT-4o-mini (verdict, reasoning, confidence, action). OWS signs the decision hash. committed onchain.
-3. **policy check** — 6-gate policy engine evaluates the decision before anything executes: spending limit, token whitelist, chain whitelist, cooldown, confidence threshold, verdict gate. result committed onchain — pass or block.
-4. **execution** — if policy approved and AI said execute_dca, runs the swap via MoonPay CLI. if policy blocked it, logs the reason. OWS signs the result. committed onchain.
+3. **policy check** — 6-gate engine evaluates the decision against the declared config: spending limit, token whitelist, chain whitelist, cooldown, confidence threshold, verdict gate. result committed onchain — pass or block.
+4. **execution** — if policy approved and AI said execute_dca, runs the swap via MoonPay CLI. if blocked, logs the reason. OWS signs the result. committed onchain.
 
 every commit is a gasless tx on Status Network. `gasPrice: 0n`, permanent, free.
 
-OWS is the trust layer — every hash is signed on both ethereum and solana chains. keys stay encrypted at rest, agent never touches them directly.
+OWS is the root of trust — not just the wallet layer. the agent signs its constraints before it acts. every subsequent step is attributed to that same OWS identity. keys stay encrypted at rest, agent never touches them directly.
 
-the tamper demo is the best part. run the agent, change one word in `last-session.json`, run verify — it catches it. that's the whole thesis in one command.
+the tamper demo is the best part. run the agent, change one word in `last-session.json`, run verify — it catches it on any of the five steps.
 
 ## policy engine
 
@@ -38,18 +39,19 @@ const policy = {
 };
 ```
 
-every policy evaluation is committed onchain — you can prove the agent was constrained, and prove it respected those constraints. a policy check you can't tamper with is more valuable than one you can.
+the config is committed onchain before the agent acts. the policy check is committed onchain after the decision. you can prove what rules the agent declared, and prove it followed them. a policy check you cannot tamper with is more valuable than one you can.
 
 ## usage
 
 ```bash
-node agent.js              # run a full cycle — 4 tx hashes
+node agent.js              # run a full cycle — 5 tx hashes
 node agent.js watch        # run autonomously every 30 min
 node agent.js watch 60     # run every 60 min
 node agent.js replay       # reconstruct all sessions from chain alone
-node agent.js verify                      # verify decision step
-node agent.js verify policy_check         # verify policy evaluation
-node agent.js verify market_data          # verify what market data the agent saw
+node agent.js verify policy_config        # prove what constraints the agent declared
+node agent.js verify decision             # prove what the agent decided
+node agent.js verify policy_check         # prove the policy evaluation result
+node agent.js verify execution            # prove what actually ran
 ```
 
 ## setup

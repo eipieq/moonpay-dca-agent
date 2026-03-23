@@ -179,6 +179,23 @@ function runPolicy(decision, lastSession) {
   };
 }
 
+// ── policy config serialization ───────────────────────────────────────────────
+function serializePolicy() {
+  return [
+    `policy_config v1`,
+    `timestamp: ${new Date().toISOString()}`,
+    `wallet: ${wallet}`,
+    `chain: ${chain}`,
+    ``,
+    `maxSpendUsdc: ${policy.maxSpendUsdc}`,
+    `allowedTokens: ${policy.allowedTokens.join(", ")}`,
+    `allowedChains: ${policy.allowedChains.join(", ")}`,
+    `cooldownMinutes: ${policy.cooldownMinutes}`,
+    `minConfidence: ${policy.minConfidence}`,
+    `requireBuyVerdict: ${policy.requireBuyVerdict}`,
+  ].join("\n");
+}
+
 // ── replay: reconstruct full session from chain alone ─────────────────────────
 async function replay() {
   const provider = new ethers.JsonRpcProvider(rpc);
@@ -241,6 +258,13 @@ async function run() {
       lastSession = JSON.parse(fs.readFileSync("last-session.json"));
     }
   } catch {}
+
+  // ── step 0: policy config — agent declares constraints before acting ───────
+  console.log("\ndeclaring policy config...");
+  const policyConfig = serializePolicy();
+  console.log(policyConfig);
+  console.log("\ncommitting to chain...");
+  const s0 = await commit("policy_config", policyConfig);
 
   // ── step 1: market data ────────────────────────────────────────────────────
   console.log("\nfetching market data...");
@@ -333,10 +357,11 @@ async function run() {
   const session = {
     ts: new Date().toISOString(),
     steps: {
-      market_data:  { txHash: s1.txHash, outputHash: s1.outputHash, content: s1.content, signature: s1.signature },
-      decision:     { txHash: s2.txHash, outputHash: s2.outputHash, content: s2.content, signature: s2.signature },
-      policy_check: { txHash: s3.txHash, outputHash: s3.outputHash, content: s3.content, signature: s3.signature },
-      execution:    { txHash: s4.txHash, outputHash: s4.outputHash, content: s4.content, signature: s4.signature },
+      policy_config: { txHash: s0.txHash, outputHash: s0.outputHash, content: s0.content, signature: s0.signature },
+      market_data:   { txHash: s1.txHash, outputHash: s1.outputHash, content: s1.content, signature: s1.signature },
+      decision:      { txHash: s2.txHash, outputHash: s2.outputHash, content: s2.content, signature: s2.signature },
+      policy_check:  { txHash: s3.txHash, outputHash: s3.outputHash, content: s3.content, signature: s3.signature },
+      execution:     { txHash: s4.txHash, outputHash: s4.outputHash, content: s4.content, signature: s4.signature },
     }
   };
   fs.writeFileSync("last-session.json", JSON.stringify(session, null, 2));
@@ -345,10 +370,11 @@ async function run() {
   console.log("\n── proof of agent ──────────────────────────");
   console.log("every step is now permanently onchain.");
   console.log("session saved to last-session.json\n");
-  console.log("market_data tx:  ", s1.txHash);
-  console.log("decision tx:     ", s2.txHash);
-  console.log("policy_check tx: ", s3.txHash);
-  console.log("execution tx:    ", s4.txHash);
+  console.log("policy_config tx: ", s0.txHash);
+  console.log("market_data tx:   ", s1.txHash);
+  console.log("decision tx:      ", s2.txHash);
+  console.log("policy_check tx:  ", s3.txHash);
+  console.log("execution tx:     ", s4.txHash);
   console.log(`\npolicy result:   ${policyResult.approved ? "APPROVED" : `BLOCKED (${policyResult.blocked})`}`);
   if (s2.signature) {
     console.log(`ows signed on:   ${Object.keys(s2.signature).join(", ")}`);
@@ -356,6 +382,7 @@ async function run() {
     if (solAddr) console.log(`ows sol address: ${solAddr}`);
   }
   console.log("\nto verify:");
+  console.log(`  node agent.js verify policy_config ${s0.txHash}`);
   console.log(`  node agent.js verify decision ${s2.txHash}`);
   console.log(`  node agent.js verify policy_check ${s3.txHash}`);
   console.log("────────────────────────────────────────────");
@@ -374,7 +401,7 @@ async function verify() {
   const session = JSON.parse(fs.readFileSync("last-session.json"));
   const entry = session.steps[step];
   if (!entry) {
-    console.log(`unknown step "${step}". use: market_data, decision, policy_check, or execution`);
+    console.log(`unknown step "${step}". use: policy_config, market_data, decision, policy_check, or execution`);
     return;
   }
 
