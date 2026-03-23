@@ -6,7 +6,7 @@ AI agents act. nobody can prove what they decided, why, or what actually ran.
 
 this project fixes that. every step an agent takes — what market data it saw, what it decided, what it executed — gets committed onchain as a keccak256 hash, permanently, for free. the tx hash is the receipt. the chain is the audit log.
 
-run `node agent.js replay` and any session reconstructs from the blockchain alone. no server, no trust.
+run `node agent.js replay` and every onchain session is listed from the blockchain alone — hashes, agent address, timestamps. no server, no trust.
 
 the DCA execution is the demo. the onchain audit layer is the actual thing.
 

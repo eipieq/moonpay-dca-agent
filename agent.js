@@ -354,10 +354,13 @@ async function run() {
   console.log("\nexecuting...");
   let execution = "";
 
-  if (!policyResult.approved) {
+  if (decision.includes("ACTION: skip_cycle")) {
+    execution = "skipped — agent chose skip_cycle";
+    console.log("agent skipped this cycle");
+  } else if (!policyResult.approved) {
     execution = `blocked — policy: ${policyResult.blocked}`;
     console.log(execution);
-  } else if (decision.includes("ACTION: execute_dca")) {
+  } else {
     try {
       execution = mp(`token swap --wallet ${wallet} --chain ${chain} --from-token ${usdc} --from-amount ${amount} --to-token ${sol}`);
       console.log(execution);
@@ -365,9 +368,6 @@ async function run() {
       execution = `swap attempted — ${e.message.split("\n")[0]}`;
       console.log(execution);
     }
-  } else {
-    execution = "skipped — agent chose skip_cycle";
-    console.log("agent skipped this cycle");
   }
 
   console.log("\ncommitting to chain...");
