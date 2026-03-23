@@ -111,9 +111,10 @@
       white-space: nowrap;
     }
 
-    .step-name.market_data { background: #1a2a1a; color: #4ade80; }
-    .step-name.decision    { background: #1a1a2a; color: #818cf8; }
-    .step-name.execution   { background: #2a1a1a; color: #f87171; }
+    .step-name.market_data  { background: #1a2a1a; color: #4ade80; }
+    .step-name.decision     { background: #1a1a2a; color: #818cf8; }
+    .step-name.policy_check { background: #1a1a1a; color: #f59e0b; }
+    .step-name.execution    { background: #2a1a1a; color: #f87171; }
 
     .step-hash {
       color: #555;
@@ -296,18 +297,30 @@
         const entries = raw.filter(e => e.prompt.startsWith("proof-of-agent:"));
 
         setStatus(`${raw.length} total entries · ${entries.length} proof-of-agent steps`, "green");
-        document.getElementById("session-count").textContent = Math.floor(entries.length / 3);
+        const sessionCount = entries.filter(e => e.prompt === "proof-of-agent:market_data").length;
+        document.getElementById("session-count").textContent = sessionCount;
 
         if (entries.length === 0) {
           document.getElementById("output").innerHTML = `<div class="empty">no proof-of-agent sessions yet</div>`;
           return;
         }
 
-        // group into sessions of 3
+        // group into sessions — start at market_data, end at execution
         const sessions = [];
-        for (let i = 0; i < entries.length; i += 3) {
-          sessions.push(entries.slice(i, i + 3));
+        let current = [];
+        for (const entry of entries) {
+          const step = entry.prompt.replace("proof-of-agent:", "");
+          if (step === "market_data" && current.length > 0) {
+            sessions.push(current);
+            current = [];
+          }
+          current.push(entry);
+          if (step === "execution") {
+            sessions.push(current);
+            current = [];
+          }
         }
+        if (current.length > 0) sessions.push(current);
 
         const html = sessions.map((steps, i) => {
           const first = steps[0];

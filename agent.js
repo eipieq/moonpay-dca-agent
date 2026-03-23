@@ -8,8 +8,19 @@ const fs = require("fs");
 const wallet = "AgentWallet";
 const chain = "solana";
 const sol = "So11111111111111111111111111111111111111111";
+const eth = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 const amount = "1";
+
+// ── policy engine config ───────────────────────────────────────────────────────
+const policy = {
+  maxSpendUsdc:      5,           // max $ per cycle
+  allowedTokens:     [sol],       // token buy whitelist
+  allowedChains:     ["solana"],  // chain whitelist
+  cooldownMinutes:   30,          // min minutes between executions
+  minConfidence:     "medium",    // low / medium / high — minimum to execute
+  requireBuyVerdict: true,        // VERDICT: BUY required to execute
+};
 
 const rpc = "https://public.sepolia.rpc.status.network";
 const logAddress = process.env.DECISION_LOG_ADDRESS;
@@ -85,6 +96,89 @@ async function commit(step, content) {
   return { txHash: receipt.hash, outputHash: hash, content, signature };
 }
 
+// ── policy engine ──────────────────────────────────────────────────────────────
+function runPolicy(decision, lastSession) {
+  const confidenceLevels = ["low", "medium", "high"];
+  const checks = [];
+  let blocked = null;
+
+  function check(name, pass, reason) {
+    checks.push({ name, pass, reason });
+    if (!pass && !blocked) blocked = name;
+  }
+
+  // 1. spending limit — cap max USDC per cycle
+  const spend = parseFloat(amount);
+  check(
+    "spending_limit",
+    spend <= policy.maxSpendUsdc,
+    `$${spend} ${spend <= policy.maxSpendUsdc ? "<=" : ">"} $${policy.maxSpendUsdc} max per cycle`
+  );
+
+  // 2. allowed token — only whitelisted tokens can be bought
+  check(
+    "allowed_token",
+    policy.allowedTokens.includes(sol),
+    `${sol.slice(0, 8)}... ${policy.allowedTokens.includes(sol) ? "is" : "not"} on whitelist`
+  );
+
+  // 3. allowed chain — only whitelisted chains
+  check(
+    "allowed_chain",
+    policy.allowedChains.includes(chain),
+    `${chain} ${policy.allowedChains.includes(chain) ? "is" : "not"} on whitelist`
+  );
+
+  // 4. cooldown — enforce minimum time between executions
+  let cooldownPass = true;
+  let cooldownReason = "no previous session — cooldown waived";
+  if (lastSession) {
+    const lastTs = new Date(lastSession.ts).getTime();
+    const elapsedMin = (Date.now() - lastTs) / 1000 / 60;
+    cooldownPass = elapsedMin >= policy.cooldownMinutes;
+    cooldownReason = `${Math.floor(elapsedMin)} min elapsed (min: ${policy.cooldownMinutes} min)`;
+  }
+  check("cooldown", cooldownPass, cooldownReason);
+
+  // 5. confidence gate — only execute if AI confidence meets threshold
+  const rawConf = (decision.match(/CONFIDENCE:\s*(\w+)/i)?.[1] || "low").toLowerCase();
+  const actualConf = confidenceLevels.includes(rawConf) ? rawConf : "low";
+  const minIdx = confidenceLevels.indexOf(policy.minConfidence);
+  const actualIdx = confidenceLevels.indexOf(actualConf);
+  check(
+    "confidence_gate",
+    actualIdx >= minIdx,
+    `confidence ${actualConf} ${actualIdx >= minIdx ? ">=" : "<"} required ${policy.minConfidence}`
+  );
+
+  // 6. verdict gate — VERDICT: BUY must be present to execute
+  const hasBuy = decision.includes("VERDICT: BUY");
+  check(
+    "verdict_gate",
+    !policy.requireBuyVerdict || hasBuy,
+    hasBuy ? "VERDICT: BUY confirmed" : "VERDICT: BUY not found — execution blocked"
+  );
+
+  // format policy report
+  const lines = [
+    `policy evaluation: ${checks.length} checks`,
+    `timestamp: ${new Date().toISOString()}`,
+    "",
+  ];
+  for (const c of checks) {
+    lines.push(`${c.pass ? "✓" : "✗"} ${c.name}: ${c.reason}`);
+  }
+  lines.push("");
+  lines.push(blocked ? `result: BLOCKED by ${blocked}` : "result: APPROVED — all checks passed");
+
+  return {
+    content: lines.join("\n"),
+    approved: !blocked,
+    blocked,
+    checks,
+  };
+}
+
 // ── replay: reconstruct full session from chain alone ─────────────────────────
 async function replay() {
   const provider = new ethers.JsonRpcProvider(rpc);
@@ -98,15 +192,14 @@ async function replay() {
 
   console.log(`replaying ${logs.length} onchain entries from ${logAddress}\n`);
 
-  // group by session (sets of 3: market, decision, execution)
-  let session = 1;
   const entries = logs.filter(e => e.prompt.startsWith("proof-of-agent:"));
-
   if (entries.length === 0) {
     console.log("no proof-of-agent entries yet.");
     return;
   }
 
+  // group by session — session starts at market_data, ends at execution
+  let session = 1;
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
     const step = entry.prompt.replace("proof-of-agent:", "");
@@ -127,7 +220,7 @@ async function replay() {
   }
 }
 
-// ── run: fetch, decide, execute, commit every step ───────────────────────────
+// ── run: fetch, decide, policy check, execute, commit every step ──────────────
 async function run() {
   const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -141,18 +234,23 @@ async function run() {
   if (ethAddr) console.log(`  eth address: ${ethAddr}`);
   if (solAddr) console.log(`  sol address: ${solAddr}`);
 
-  // step 1: market data
+  // load last session for cooldown check
+  let lastSession = null;
+  try {
+    if (fs.existsSync("last-session.json")) {
+      lastSession = JSON.parse(fs.readFileSync("last-session.json"));
+    }
+  } catch {}
+
+  // ── step 1: market data ────────────────────────────────────────────────────
   console.log("\nfetching market data...");
   const trending = mp(`token trending list --chain ${chain} --page 1 --limit 3`);
   const solData = mp(`token retrieve --chain solana --token ${sol}`);
 
-  // eth price for broader context
-  const eth = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
   let ethData = "";
   try { ethData = mp(`token retrieve --chain ethereum --token ${eth}`); }
   catch { ethData = "unavailable"; }
 
-  // portfolio snapshot
   let portfolio = "";
   try { portfolio = mp(`portfolio show --wallet ${wallet}`); }
   catch {
@@ -160,15 +258,32 @@ async function run() {
     catch { portfolio = "unfunded"; }
   }
 
-  const market = `trending:\n${trending.substring(0, 600)}\n\nsol:\n${solData.substring(0, 300)}\n\neth:\n${ethData.substring(0, 200)}\n\nportfolio: ${portfolio.substring(0, 300)}`;
-  console.log(solData.split("\n").slice(0, 5).join("\n"));
+  const market = [
+    `trending:\n${trending.substring(0, 600)}`,
+    `sol:\n${solData.substring(0, 300)}`,
+    `eth:\n${ethData.substring(0, 200)}`,
+    `portfolio: ${portfolio.substring(0, 300)}`,
+  ].join("\n\n");
 
+  console.log(solData.split("\n").slice(0, 5).join("\n"));
   console.log("\ncommitting to chain...");
   const s1 = await commit("market_data", market);
 
-  // step 2: ai decision
+  // ── step 2: ai decision ────────────────────────────────────────────────────
   console.log("\nasking the agent...");
-  const prompt = `you are a DCA agent. here is the current market state:\n\n${market}\n\nshould i DCA $${amount} USDC into SOL right now? consider SOL price, ETH trend, portfolio balance, and trending tokens.\n\nreply with:\nVERDICT: BUY or SKIP\nREASONING: 2-3 sentences\nCONFIDENCE: low / medium / high\nACTION: execute_dca or skip_cycle`;
+  const prompt = [
+    "you are a DCA agent. here is the current market state:",
+    "",
+    market,
+    "",
+    `should i DCA $${amount} USDC into SOL right now? consider SOL price, ETH trend, portfolio balance, and trending tokens.`,
+    "",
+    "reply with:",
+    "VERDICT: BUY or SKIP",
+    "REASONING: 2-3 sentences",
+    "CONFIDENCE: low / medium / high",
+    "ACTION: execute_dca or skip_cycle",
+  ].join("\n");
 
   const res = await openai.chat.completions.create({
     model: "gpt-4o-mini",
@@ -181,14 +296,24 @@ async function run() {
 
   const decision = res.choices[0].message.content;
   console.log("\n" + decision);
-
   console.log("\ncommitting to chain...");
   const s2 = await commit("decision", decision);
 
-  // step 3: execution
+  // ── step 3: policy check ───────────────────────────────────────────────────
+  console.log("\nrunning policy checks...");
+  const policyResult = runPolicy(decision, lastSession);
+  console.log("\n" + policyResult.content);
+  console.log("\ncommitting to chain...");
+  const s3 = await commit("policy_check", policyResult.content);
+
+  // ── step 4: execution ──────────────────────────────────────────────────────
   console.log("\nexecuting...");
-  let execution = "skipped — agent chose skip_cycle";
-  if (decision.includes("ACTION: execute_dca")) {
+  let execution = "";
+
+  if (!policyResult.approved) {
+    execution = `blocked — policy: ${policyResult.blocked}`;
+    console.log(execution);
+  } else if (decision.includes("ACTION: execute_dca")) {
     try {
       execution = mp(`token swap --wallet ${wallet} --chain ${chain} --from-token ${usdc} --from-amount ${amount} --to-token ${sol}`);
       console.log(execution);
@@ -197,19 +322,21 @@ async function run() {
       console.log(execution);
     }
   } else {
+    execution = "skipped — agent chose skip_cycle";
     console.log("agent skipped this cycle");
   }
 
   console.log("\ncommitting to chain...");
-  const s3 = await commit("execution", execution);
+  const s4 = await commit("execution", execution);
 
-  // save session for verify
+  // save session
   const session = {
     ts: new Date().toISOString(),
     steps: {
-      market_data: { txHash: s1.txHash, outputHash: s1.outputHash, content: s1.content, signature: s1.signature },
-      decision:    { txHash: s2.txHash, outputHash: s2.outputHash, content: s2.content, signature: s2.signature },
-      execution:   { txHash: s3.txHash, outputHash: s3.outputHash, content: s3.content, signature: s3.signature },
+      market_data:  { txHash: s1.txHash, outputHash: s1.outputHash, content: s1.content, signature: s1.signature },
+      decision:     { txHash: s2.txHash, outputHash: s2.outputHash, content: s2.content, signature: s2.signature },
+      policy_check: { txHash: s3.txHash, outputHash: s3.outputHash, content: s3.content, signature: s3.signature },
+      execution:    { txHash: s4.txHash, outputHash: s4.outputHash, content: s4.content, signature: s4.signature },
     }
   };
   fs.writeFileSync("last-session.json", JSON.stringify(session, null, 2));
@@ -218,17 +345,19 @@ async function run() {
   console.log("\n── proof of agent ──────────────────────────");
   console.log("every step is now permanently onchain.");
   console.log("session saved to last-session.json\n");
-  console.log("market_data tx: ", s1.txHash);
-  console.log("decision tx:    ", s2.txHash);
-  console.log("execution tx:   ", s3.txHash);
+  console.log("market_data tx:  ", s1.txHash);
+  console.log("decision tx:     ", s2.txHash);
+  console.log("policy_check tx: ", s3.txHash);
+  console.log("execution tx:    ", s4.txHash);
+  console.log(`\npolicy result:   ${policyResult.approved ? "APPROVED" : `BLOCKED (${policyResult.blocked})`}`);
   if (s2.signature) {
-    const chains = Object.keys(s2.signature);
-    console.log(`\nows signed on: ${chains.join(", ")}`);
+    console.log(`ows signed on:   ${Object.keys(s2.signature).join(", ")}`);
     if (ethAddr) console.log(`ows eth address: ${ethAddr}`);
     if (solAddr) console.log(`ows sol address: ${solAddr}`);
   }
   console.log("\nto verify:");
   console.log(`  node agent.js verify decision ${s2.txHash}`);
+  console.log(`  node agent.js verify policy_check ${s3.txHash}`);
   console.log("────────────────────────────────────────────");
 }
 
@@ -245,7 +374,7 @@ async function verify() {
   const session = JSON.parse(fs.readFileSync("last-session.json"));
   const entry = session.steps[step];
   if (!entry) {
-    console.log(`unknown step "${step}". use: market_data, decision, or execution`);
+    console.log(`unknown step "${step}". use: market_data, decision, policy_check, or execution`);
     return;
   }
 

@@ -12,26 +12,44 @@ the DCA execution is the demo. the onchain audit layer is the actual thing.
 
 ## how it works
 
-three steps, three onchain commits per run:
+four steps, four onchain commits per run:
 
-1. **market data** — agent fetches SOL + ETH prices, trending tokens, and portfolio balance via MoonPay CLI. OWS signs the hash on both ethereum and solana chains. committed onchain.
-2. **decision** — agent reasons via OpenAI GPT-4o-mini. OWS signs the decision hash (multi-chain). committed onchain.
-3. **execution** — agent runs the swap via MoonPay CLI or skips. OWS signs the result hash. committed onchain.
+1. **market data** — fetches SOL + ETH prices, trending tokens, and portfolio balance via MoonPay CLI. OWS signs the hash on ethereum and solana. committed onchain.
+2. **decision** — reasons via OpenAI GPT-4o-mini (verdict, reasoning, confidence, action). OWS signs the decision hash. committed onchain.
+3. **policy check** — 6-gate policy engine evaluates the decision before anything executes: spending limit, token whitelist, chain whitelist, cooldown, confidence threshold, verdict gate. result committed onchain — pass or block.
+4. **execution** — if policy approved and AI said execute_dca, runs the swap via MoonPay CLI. if policy blocked it, logs the reason. OWS signs the result. committed onchain.
 
 every commit is a gasless tx on Status Network. `gasPrice: 0n`, permanent, free.
 
-OWS is the trust layer — every hash is signed with the agent's wallet before it hits the chain. keys stay encrypted at rest, agent never touches them directly.
+OWS is the trust layer — every hash is signed on both ethereum and solana chains. keys stay encrypted at rest, agent never touches them directly.
 
 the tamper demo is the best part. run the agent, change one word in `last-session.json`, run verify — it catches it. that's the whole thesis in one command.
+
+## policy engine
+
+```js
+const policy = {
+  maxSpendUsdc:      5,           // max $ per cycle
+  allowedTokens:     [sol],       // token buy whitelist
+  allowedChains:     ["solana"],  // chain whitelist
+  cooldownMinutes:   30,          // min minutes between executions
+  minConfidence:     "medium",    // minimum AI confidence to execute
+  requireBuyVerdict: true,        // VERDICT: BUY required
+};
+```
+
+every policy evaluation is committed onchain — you can prove the agent was constrained, and prove it respected those constraints. a policy check you can't tamper with is more valuable than one you can.
 
 ## usage
 
 ```bash
-node agent.js              # run a full cycle, get 3 tx hashes
+node agent.js              # run a full cycle — 4 tx hashes
 node agent.js watch        # run autonomously every 30 min
 node agent.js watch 60     # run every 60 min
 node agent.js replay       # reconstruct all sessions from chain alone
-node agent.js verify       # prove decision content matches its onchain hash
+node agent.js verify                      # verify decision step
+node agent.js verify policy_check         # verify policy evaluation
+node agent.js verify market_data          # verify what market data the agent saw
 ```
 
 ## setup
