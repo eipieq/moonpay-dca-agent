@@ -73,8 +73,8 @@ to actually execute swaps, fund the MoonPay `AgentWallet` Solana address with US
 
 | layer | tool |
 |---|---|
-| wallet | [OpenWallet Standard](https://openwallet.sh/) — keys encrypted at rest, agent never touches them |
-| execution | [MoonPay CLI](https://www.moonpay.com/agents) — trending tokens, SOL + ETH prices, portfolio, swaps via `mp` |
+| wallet | [OpenWallet Standard](https://openwallet.sh/) — multi-chain signing (ethereum + solana), keys encrypted at rest, audit policy type extension |
+| execution | [MoonPay CLI](https://www.moonpay.com/agents) — trending tokens, SOL + ETH prices, portfolio, Polymarket, bridge quotes, swaps via `mp` |
 | decision engine | OpenAI GPT-4o-mini |
 | audit log | Status Network Sepolia — gasless, `gasPrice: 0n` |
 | smart contract | `DecisionLog.sol` — stores keccak256 hashes + timestamps onchain |
@@ -84,7 +84,7 @@ to actually execute swaps, fund the MoonPay `AgentWallet` Solana address with US
 | track | how we qualify |
 |---|---|
 | MoonPay CLI Agents | `mp` is the primary action layer — market data, balances, swap execution all go through it |
-| OpenWallet Standard | `ows` manages all keys — multi-chain signing (ethereum + solana), encrypted at rest, agent never touches private keys |
+| OpenWallet Standard | `ows` manages all keys — multi-chain signing (ethereum + solana), encrypted at rest. extends OWS with a new `audit` policy type (see `policies/audit-policy.md`) |
 | Synthesis Open Track | onchain audit primitive for any autonomous agent system |
 | Student Founder's Bet | current MSE + IIT Madras BS Data Science student |
 

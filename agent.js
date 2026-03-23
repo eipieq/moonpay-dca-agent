@@ -180,12 +180,14 @@ function runPolicy(decision, lastSession) {
 }
 
 // ── policy config serialization ───────────────────────────────────────────────
-function serializePolicy() {
+function serializePolicy(ethAddr, solAddr) {
   return [
     `policy_config v1`,
     `timestamp: ${new Date().toISOString()}`,
     `wallet: ${wallet}`,
     `chain: ${chain}`,
+    ethAddr ? `ows_eth_address: ${ethAddr}` : null,
+    solAddr ? `ows_sol_address: ${solAddr}` : null,
     ``,
     `maxSpendUsdc: ${policy.maxSpendUsdc}`,
     `allowedTokens: ${policy.allowedTokens.join(", ")}`,
@@ -193,7 +195,7 @@ function serializePolicy() {
     `cooldownMinutes: ${policy.cooldownMinutes}`,
     `minConfidence: ${policy.minConfidence}`,
     `requireBuyVerdict: ${policy.requireBuyVerdict}`,
-  ].join("\n");
+  ].filter(l => l !== null).join("\n");
 }
 
 // ── replay: reconstruct full session from chain alone ─────────────────────────
@@ -261,7 +263,7 @@ async function run() {
 
   // ── step 0: policy config — agent declares constraints before acting ───────
   console.log("\ndeclaring policy config...");
-  const policyConfig = serializePolicy();
+  const policyConfig = serializePolicy(ethAddr, solAddr);
   console.log(policyConfig);
   console.log("\ncommitting to chain...");
   const s0 = await commit("policy_config", policyConfig);
@@ -282,11 +284,29 @@ async function run() {
     catch { portfolio = "unfunded"; }
   }
 
+  // polymarket — top prediction markets for macro context
+  let polymarket = "";
+  try { polymarket = mp(`polymarket markets --limit 3`); }
+  catch {
+    try { polymarket = mp(`polymarket list --limit 3`); }
+    catch { polymarket = "unavailable"; }
+  }
+
+  // bridge — cross-chain route for USDC
+  let bridgeQuote = "";
+  try { bridgeQuote = mp(`bridge quote --from-chain ethereum --to-chain solana --token usdc --amount ${amount}`); }
+  catch {
+    try { bridgeQuote = mp(`bridge routes --from-chain ethereum --to-chain solana`); }
+    catch { bridgeQuote = "unavailable"; }
+  }
+
   const market = [
     `trending:\n${trending.substring(0, 600)}`,
     `sol:\n${solData.substring(0, 300)}`,
     `eth:\n${ethData.substring(0, 200)}`,
     `portfolio: ${portfolio.substring(0, 300)}`,
+    `polymarket:\n${polymarket.substring(0, 300)}`,
+    `bridge_quote:\n${bridgeQuote.substring(0, 200)}`,
   ].join("\n\n");
 
   console.log(solData.split("\n").slice(0, 5).join("\n"));
@@ -300,7 +320,7 @@ async function run() {
     "",
     market,
     "",
-    `should i DCA $${amount} USDC into SOL right now? consider SOL price, ETH trend, portfolio balance, and trending tokens.`,
+    `should i DCA $${amount} USDC into SOL right now? consider SOL price, ETH trend, portfolio balance, trending tokens, Polymarket sentiment, and bridge availability.`,
     "",
     "reply with:",
     "VERDICT: BUY or SKIP",
