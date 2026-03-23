@@ -14,20 +14,24 @@ the DCA execution is the demo. the onchain audit layer is the actual thing.
 
 three steps, three onchain commits per run:
 
-1. **market data** — agent fetches live portfolio + trending tokens via MoonPay CLI, commits a hash of everything it saw
-2. **decision** — agent reasons via OpenAI, commits the decision hash (verdict, reasoning, confidence)
-3. **execution** — agent runs the swap via MoonPay CLI or skips, commits the result hash
+1. **market data** — agent fetches SOL + ETH prices, trending tokens, and portfolio balance via MoonPay CLI. OWS signs the hash on both ethereum and solana chains. committed onchain.
+2. **decision** — agent reasons via OpenAI GPT-4o-mini. OWS signs the decision hash (multi-chain). committed onchain.
+3. **execution** — agent runs the swap via MoonPay CLI or skips. OWS signs the result hash. committed onchain.
 
 every commit is a gasless tx on Status Network. `gasPrice: 0n`, permanent, free.
+
+OWS is the trust layer — every hash is signed with the agent's wallet before it hits the chain. keys stay encrypted at rest, agent never touches them directly.
 
 the tamper demo is the best part. run the agent, change one word in `last-session.json`, run verify — it catches it. that's the whole thesis in one command.
 
 ## usage
 
 ```bash
-node agent.js           # run a full cycle, get 3 tx hashes
-node agent.js replay    # reconstruct all sessions from chain alone
-node agent.js verify    # prove decision content matches its onchain hash
+node agent.js              # run a full cycle, get 3 tx hashes
+node agent.js watch        # run autonomously every 30 min
+node agent.js watch 60     # run every 60 min
+node agent.js replay       # reconstruct all sessions from chain alone
+node agent.js verify       # prove decision content matches its onchain hash
 ```
 
 ## setup
@@ -50,7 +54,7 @@ to actually execute swaps, fund the MoonPay `AgentWallet` Solana address with US
 | layer | tool |
 |---|---|
 | wallet | [OpenWallet Standard](https://openwallet.sh/) — keys encrypted at rest, agent never touches them |
-| execution | [MoonPay CLI](https://www.moonpay.com/agents) — balances, market data, swaps via `mp` |
+| execution | [MoonPay CLI](https://www.moonpay.com/agents) — trending tokens, SOL + ETH prices, portfolio, swaps via `mp` |
 | decision engine | OpenAI GPT-4o-mini |
 | audit log | Status Network Sepolia — gasless, `gasPrice: 0n` |
 | smart contract | `DecisionLog.sol` — stores keccak256 hashes + timestamps onchain |
@@ -60,7 +64,7 @@ to actually execute swaps, fund the MoonPay `AgentWallet` Solana address with US
 | track | how we qualify |
 |---|---|
 | MoonPay CLI Agents | `mp` is the primary action layer — market data, balances, swap execution all go through it |
-| OpenWallet Standard | `ows` manages all keys — encrypted at rest, agent never touches the private key directly |
+| OpenWallet Standard | `ows` manages all keys — multi-chain signing (ethereum + solana), encrypted at rest, agent never touches private keys |
 | Synthesis Open Track | onchain audit primitive for any autonomous agent system |
 | Student Founder's Bet | current MSE + IIT Madras BS Data Science student |
 

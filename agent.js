@@ -30,16 +30,30 @@ function ows(args) {
   return r.stdout.trim();
 }
 
-function owsSign(message) {
+function owsSign(message, chainName = "ethereum") {
   const r = spawnSync("ows", [
     "sign", "message",
-    "--chain", "ethereum",
+    "--chain", chainName,
     "--wallet", wallet,
     "--message", message,
     "--json"
   ], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(r.stderr.trim());
   return JSON.parse(r.stdout.trim());
+}
+
+function owsAddress(chainName = "ethereum") {
+  try {
+    const r = spawnSync("ows", [
+      "wallet", "show",
+      "--name", wallet,
+      "--chain", chainName,
+      "--json"
+    ], { encoding: "utf8" });
+    if (r.status !== 0) return null;
+    const data = JSON.parse(r.stdout.trim());
+    return data.address || data.publicKey || null;
+  } catch { return null; }
 }
 
 function getContract() {
@@ -52,14 +66,18 @@ async function commit(step, content) {
   const contract = getContract();
   const hash = ethers.keccak256(ethers.toUtf8Bytes(content));
 
-  let signature = null;
-  try {
-    const signed = owsSign(hash);
-    signature = signed.signature || signed;
-    console.log(`  [${step}] ows signed → ${typeof signature === "string" ? signature.slice(0, 20) + "..." : "ok"}`);
-  } catch (e) {
-    console.log(`  [${step}] ows sign skipped: ${e.message.split("\n")[0]}`);
+  // multi-chain ows signing — ethereum + solana
+  const signatures = {};
+  for (const chainName of ["ethereum", "solana"]) {
+    try {
+      const signed = owsSign(hash, chainName);
+      signatures[chainName] = signed.signature || signed;
+      console.log(`  [${step}] ows signed (${chainName}) → ${String(signatures[chainName]).slice(0, 20)}...`);
+    } catch (e) {
+      console.log(`  [${step}] ows sign skipped (${chainName}): ${e.message.split("\n")[0]}`);
+    }
   }
+  const signature = Object.keys(signatures).length > 0 ? signatures : null;
 
   const tx = await contract.log(hash, `proof-of-agent:${step}`, { gasPrice: 0n, gasLimit: 3000000n });
   const receipt = await tx.wait();
@@ -115,19 +133,34 @@ async function run() {
 
   console.log("proof of agent — run starting\n");
 
-  // ows wallet
+  // ows wallet — show addresses across chains
   console.log("ows wallet:");
   console.log(ows("wallet list").split("\n").slice(0, 3).join("\n"));
+  const ethAddr = owsAddress("ethereum");
+  const solAddr = owsAddress("solana");
+  if (ethAddr) console.log(`  eth address: ${ethAddr}`);
+  if (solAddr) console.log(`  sol address: ${solAddr}`);
 
   // step 1: market data
   console.log("\nfetching market data...");
   const trending = mp(`token trending list --chain ${chain} --page 1 --limit 3`);
   const solData = mp(`token retrieve --chain solana --token ${sol}`);
-  let balances = "";
-  try { balances = mp(`token balance list --wallet ${wallet} --chain ${chain}`); }
-  catch { balances = "unfunded"; }
 
-  const market = `trending:\n${trending.substring(0, 600)}\n\nsol:\n${solData.substring(0, 300)}\n\nbalance: ${balances}`;
+  // eth price for broader context
+  const eth = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  let ethData = "";
+  try { ethData = mp(`token retrieve --chain ethereum --token ${eth}`); }
+  catch { ethData = "unavailable"; }
+
+  // portfolio snapshot
+  let portfolio = "";
+  try { portfolio = mp(`portfolio show --wallet ${wallet}`); }
+  catch {
+    try { portfolio = mp(`token balance list --wallet ${wallet} --chain ${chain}`); }
+    catch { portfolio = "unfunded"; }
+  }
+
+  const market = `trending:\n${trending.substring(0, 600)}\n\nsol:\n${solData.substring(0, 300)}\n\neth:\n${ethData.substring(0, 200)}\n\nportfolio: ${portfolio.substring(0, 300)}`;
   console.log(solData.split("\n").slice(0, 5).join("\n"));
 
   console.log("\ncommitting to chain...");
@@ -135,7 +168,7 @@ async function run() {
 
   // step 2: ai decision
   console.log("\nasking the agent...");
-  const prompt = `you are a DCA agent. here is the current market state:\n\n${market}\n\nshould i DCA $${amount} USDC into SOL right now?\n\nreply with:\nVERDICT: BUY or SKIP\nREASONING: 2-3 sentences\nCONFIDENCE: low / medium / high\nACTION: execute_dca or skip_cycle`;
+  const prompt = `you are a DCA agent. here is the current market state:\n\n${market}\n\nshould i DCA $${amount} USDC into SOL right now? consider SOL price, ETH trend, portfolio balance, and trending tokens.\n\nreply with:\nVERDICT: BUY or SKIP\nREASONING: 2-3 sentences\nCONFIDENCE: low / medium / high\nACTION: execute_dca or skip_cycle`;
 
   const res = await openai.chat.completions.create({
     model: "gpt-4o-mini",
@@ -188,6 +221,12 @@ async function run() {
   console.log("market_data tx: ", s1.txHash);
   console.log("decision tx:    ", s2.txHash);
   console.log("execution tx:   ", s3.txHash);
+  if (s2.signature) {
+    const chains = Object.keys(s2.signature);
+    console.log(`\nows signed on: ${chains.join(", ")}`);
+    if (ethAddr) console.log(`ows eth address: ${ethAddr}`);
+    if (solAddr) console.log(`ows sol address: ${solAddr}`);
+  }
   console.log("\nto verify:");
   console.log(`  node agent.js verify decision ${s2.txHash}`);
   console.log("────────────────────────────────────────────");
@@ -242,11 +281,35 @@ async function verify() {
   }
 }
 
+// ── watch: run autonomously on a loop ─────────────────────────────────────────
+async function watch() {
+  const intervalMin = parseInt(process.argv[3]) || 30;
+  const intervalMs = intervalMin * 60 * 1000;
+
+  console.log(`proof of agent — watch mode (every ${intervalMin} min)\n`);
+  console.log("ctrl+c to stop\n");
+
+  let cycle = 1;
+  while (true) {
+    console.log(`\n══ cycle ${cycle} ── ${new Date().toISOString()} ══`);
+    try {
+      await run();
+    } catch (e) {
+      console.error(`cycle ${cycle} error: ${e.message}`);
+    }
+    cycle++;
+    console.log(`\nnext cycle in ${intervalMin} min...`);
+    await new Promise(res => setTimeout(res, intervalMs));
+  }
+}
+
 const mode = process.argv[2];
 if (mode === "replay") {
   replay().catch((e) => { console.error(e.message); process.exit(1); });
 } else if (mode === "verify") {
   verify().catch((e) => { console.error(e.message); process.exit(1); });
+} else if (mode === "watch") {
+  watch().catch((e) => { console.error(e.message); process.exit(1); });
 } else {
   run().catch((e) => { console.error(e.message); process.exit(1); });
 }
